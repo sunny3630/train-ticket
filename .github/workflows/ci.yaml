@@ -1,33 +1,33 @@
-name: ci pipeline to build maven
+name: Java CI Pipeline
+
 on:
   push:
-    branches: master
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
 jobs:
-  build-deploy:
-     runs-on: ubuntu-latest
-     steps:
-      - name: checkout code 
-        uses: actions/checkout@v5
-      - name: set-up jdk 
-        uses: actions/setup-java@v5
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
         with:
-           distribution: "temurin"
-           java-version:  '17'
-      - name: validate with maven
-        run: mvn validate
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
 
-      - name: compile with maven
-        run: mvn compile
+      - name: Build and Test
+        run: mvn clean test
 
-      - name: test with maven
-        run: mvn test
-
-      - name: package with maven
+      - name: Package Application
         run: mvn package
-
-      - name: verfiy the war file
-        run: ls -lh target/
-        
         
         
       
