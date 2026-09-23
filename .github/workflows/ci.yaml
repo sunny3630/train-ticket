@@ -1,86 +1,134 @@
-name: Java CI/CD Pipeline
+name: Java CI-CD Pipeline
 
 on:
   push:
     branches:
       - main
 
-  pull_request:
-    branches:
-      - main
+env:
+  AWS_REGION: ap-northeast-1       
+  ECR_REPOSITORY: devops-app-repo            
+  EKS_CLUSTER_NAME: ips-cluster
 
 jobs:
-
-  # =========================
-  # CI - BUILD & TEST
-  # =========================
-  build:
-    name: Build and Test
-    runs-on: ubuntu-latest
+  ci-cd:
+    runs-on: ubuntu-latest       
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v5
 
-      - name: Setup Java 17
-        uses: actions/setup-java@v5
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
+########################################
+# 1. Checkout Code
+########################################
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-      - name: Build and Test
-        run: mvn clean test
+########################################
+# 2. Setup Java
+########################################
+    - name: Setup Java
+      uses: actions/setup-java@v3
+      with:
+        distribution: temurin
+        java-version: 17
+        cache: maven
 
-      - name: Package Application
-        run: mvn package -DskipTests
+########################################
+# 3. Build Application
+########################################
+    - name: Build Maven
+      run: mvn clean install
 
-      - name: Upload JAR Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: java-application
-          path: target/*.jar
+########################################
+# 4. SonarQube Scan
+########################################
+    - name: SonarQube Scan
+      run: |
+        mvn sonar:sonar \
+        -Dsonar.projectKey=my-java-app \
+        -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+        -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
+########################################
+# 5. Configure AWS
+########################################
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
 
-  # =========================
-  # CD - DEPLOY TO EC2
-  # =========================
-  deploy:
-    name: Deploy to EC2
-    needs: build
-    if: github.ref == 'refs/heads/main'
+########################################
+# 6. Login to ECR
+########################################
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
 
-    runs-on: ubuntu-latest
+########################################
+# 7. Build Docker Image
+########################################
+    - name: Build Docker Image
+      run: |
+        docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest .
 
-    steps:
-      - name: Download JAR Artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: java-application
-          path: target
+########################################
+# 8. Trivy Scan
+########################################
+    - name: Scan Image using Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+        format: table
+        severity: CRITICAL,HIGH
+        exit-code: 0
 
-      - name: Deploy to EC2
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          source: "target/*.jar"
-          target: "/home/ubuntu/app"
+########################################
+# 9. Push Image to ECR
+########################################
+    - name: Push Image to ECR
+      run: |
+        docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
-      - name: Restart Application
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USERNAME }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd /home/ubuntu/app
+########################################
+# 10. Setup kubectl
+########################################
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
 
-            pkill -f 'java -jar' || true
+########################################
+# 11. Connect to EKS
+########################################
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig \
+          --region $AWS_REGION \
+          --name $EKS_CLUSTER_NAME
 
-            nohup java -jar *.jar > application.log 2>&1 &
-        
+########################################
+# 12. Replace Image in Deployment YAML
+########################################
+    - name: Replace IMAGE placeholder
+      run: |
+        IMAGE=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+        sed -i "s|IMAGE_PLACEHOLDER|$IMAGE|g" k8s/deployment.yaml
+
+########################################
+# 13. Deploy to Kubernetes
+########################################
+    - name: Deploy to EKS
+      run: |
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+
+########################################
+# 14. Verify Deployment
+########################################
+    - name: Verify Deployment
+      run: |
+        kubectl get pods
+        kubectl get svc
+        kubectl rollout status deployment/devops-app
         
         
       
