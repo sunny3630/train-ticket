@@ -1,4 +1,4 @@
-```yaml
+
 name: Train Ticket Reservation CI/CD
 
 on:
